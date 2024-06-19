@@ -1,4 +1,4 @@
-CONTINUOUS_COLUMNS = ['duration', 'price']
+CONTINUOUS_COLUMNS = ['duration'] # 'price'
 
 DISCRETE_COLUMNS = ['days_left']
 
