@@ -1,8 +1,11 @@
 import pickle
 import sys
 
+import keras
 import pandas as pd
 from flask import jsonify
+from keras.src.callbacks import ModelCheckpoint
+
 from constants import NOMINAL_COLUMNS, DISCRETE_COLUMNS, CONTINUOUS_COLUMNS
 import numpy as np
 import numpy as np
@@ -50,32 +53,8 @@ class MLModel:
                       else print('model.pkl does not exist'))
 
     def predict(self, inference_row):
-        """
-        Predicts the outcome based on the input data row.
-
-        This method applies the preprocessing pipeline to the input data, performs necessary
-        transformations, and uses the preloaded model to make a prediction. The 'V24' column
-        is removed from the data frame as part of the preprocessing steps. If an error occurs
-        during the prediction process, it catches the exception and returns a JSON object with
-        the error message and a 500 status code.
-
-        Parameters:
-        - inference_row: A single row of input data meant for prediction. Expected to be a list or
-        a series that matches the format and order expected by the preprocessing pipeline and model.
-
-        Returns:
-        - On success: Returns the prediction as an integer.
-        - On failure: Returns a JSON response object with an error message and a 500 status code.
-
-        Notes:
-        - Ensure that the input data row is in the correct format and contains the expected features
-        excluding 'V24', which is not required and will be removed during preprocessing.
-        - The method is wrapped in a try-except block to handle unexpected errors during prediction.
-        """
         try:
             y_pred = self.model.predict(inference_row)
-            print('y_pred:')
-            print(y_pred)
             return y_pred
 
         except Exception as e:
@@ -86,18 +65,6 @@ class MLModel:
                             'error': str(e)}), 500
 
     def preprocessing_pipeline(self, df):
-        """Preprocess the data to handle missing values,
-        create new features, encode categorical features,
-        and normalize the data using min max scaling.
-        Returns the preprocessed dataframe.
-
-        Keyword arguments:
-        df -- DataFrame with the data
-
-        Returns:
-        df -- DataFrame with the preprocessed data
-        """
-
         folder = 'artifacts/encoders'
         MLModel.create_new_folder(folder)
 
@@ -128,28 +95,22 @@ class MLModel:
             df[col].fillna(self.fill_values_continuous[col], inplace=True)
 
         for col in CONTINUOUS_COLUMNS:
-            # Calculate Z-score values for the column
             df[col + '_zscore'] = stats.zscore(df[col])
 
-            # Assuming that outliers are indicated by absolute Z-scores greater than 3
             outlier_indices = df[abs(df[col + '_zscore']) > 3].index
 
-            # Replace outliers with the median of the column
             mean_value = df[col].mean()
 
             df.loc[outlier_indices, col] = mean_value
 
-            # Drop the Z-score column as it's no longer needed
             df.drop(columns=[col + '_zscore'], inplace=True)
 
-        # OneHot Encoding for ML
         self.onehot_encoders = {}
         new_columns = []
 
         for col in NOMINAL_COLUMNS:
             encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
 
-            # print("Type of OH encoder: ", type(encoder))
             new_data = encoder.fit_transform(df[col].to_numpy().reshape(-1, 1))
 
             new_columns.extend(encoder.get_feature_names_out([col]))
@@ -163,9 +124,10 @@ class MLModel:
 
         self.min_max_scaler_dict = {}
         for col in df.columns:
-            min_max_scaler = MinMaxScaler()
-            df[col] = min_max_scaler.fit_transform(df[[col]])
-            self.min_max_scaler_dict[col] = min_max_scaler
+            if not col == 'price':
+                min_max_scaler = MinMaxScaler()
+                df[col] = min_max_scaler.fit_transform(df[[col]])
+                self.min_max_scaler_dict[col] = min_max_scaler
 
         MLModel.save_model(self.fill_values_nominal,
                            'artifacts/nan_outlier_handler/fill_values_nominal.pkl')
@@ -178,29 +140,16 @@ class MLModel:
         MLModel.save_model(self.onehot_encoders,
                            'artifacts/encoders/onehot_encoders_dict.pkl')
 
+        df = df.astype(float)
         return df
 
     def preprocessing_pipeline_inference(self, sample_data):
-        """Preprocess the inference row to match
-        the features we created for training data.
-        Returns the preprocessed dataframe for inference.
-
-        Keyword arguments:
-        sample_data -- Pandas series with the inference data
-
-        Returns:
-        input_df -- DataFrame with the preprocessed inference data
-        """
-        pd.set_option("future.no_silent_downcasting", True)
-
         sample_data = pd.DataFrame([sample_data])
         sample_data.columns = ['Unnamed: 0', 'airline', 'flight', 'source_city', 'departure_time',
                                'stops', 'arrival_time', 'destination_city', 'class', 'duration',
                                'days_left', 'price']
         sample_data.drop(columns=['Unnamed: 0'], inplace=True)
         sample_data.drop(columns=['flight'], inplace=True)
-        print(str(sample_data))
-        print("hello")
 
         for col in CONTINUOUS_COLUMNS:
             sample_data[col] = pd.to_numeric(sample_data[col], errors='coerce')
@@ -227,8 +176,7 @@ class MLModel:
                 sample_data[col] = scaler.transform(sample_data[[col]])
         if 'price' in sample_data.columns:
             sample_data = sample_data.drop(columns=['price'])
-        print(sample_data)
-        print('I live')
+
         return sample_data
 
     def get_accuracy(self, X_train, X_test, y_train, y_test):
@@ -276,16 +224,6 @@ class MLModel:
         return accuracy
 
     def train_and_save_model(self, df):
-        """Train the model and save it to a file.
-        Returns the train and test accuracy.
-
-        Keyword arguments:
-        df -- DataFrame with the preprocessed data
-
-        Returns:
-        train_accuracy -- Accuracy of the model on the training set
-        test_accuracy -- Accuracy of the model on the test set
-        """
         y = df["price"]
         X = df.drop(columns="price")
 
@@ -295,25 +233,27 @@ class MLModel:
             return tf.reduce_mean(
                 tf.abs((y_true - y_pred) / tf.clip_by_value(tf.abs(y_true), 1e-8, tf.float32.max))) * 100
 
-        early_stopping = EarlyStopping(patience=5, restore_best_weights=True, verbose=1)
+        early_stopping = EarlyStopping(patience=10, restore_best_weights=True, verbose=1)
+
+        checkpoint = ModelCheckpoint('best_model.keras', monitor='val_loss', save_best_only=True, mode='min')
 
         optimizer = Adam(learning_rate=0.0005)
-        print("getting this far")
         neural_model = tf.keras.Sequential([
             Input(shape=(X_train.shape[1],)),
-            Dense(50, activation='relu'),
-            Dense(50, activation='relu'),
+            Dense(20, activation='relu'),
+            Dense(20, activation='relu'),
+            Dense(20, activation='relu'),
+            Dense(20, activation='relu'),
             # Dropout(0.3),
-            Dense(50, activation='relu'),
-            Dense(1, activation='linear')  # Linear activation for regression
+            Dense(1, activation='linear')
         ])
 
         neural_model.compile(optimizer=optimizer, loss='mean_squared_error',
                              metrics=['mse', mean_absolute_percentage_error])
         history = neural_model.fit(X_train, y_train, epochs=100, validation_data=(X_test, y_test), verbose=1,
-                                   callbacks=[early_stopping])
+                                   callbacks=[early_stopping, checkpoint])
 
-        self.model = neural_model
+        self.model = keras.models.load_model('best_model.keras')
 
         # train_accuracy, test_accuracy = self.get_accuracy(X_train, X_test, y_train, y_test)
 
@@ -327,82 +267,16 @@ class MLModel:
         y_test = y_test.values if isinstance(y_test, pd.Series) else y_test
         y_pred_test = y_pred_test.flatten()
 
-        print(X_test)
-        print(y_test)
-        print(y_pred_test)
-
         mape_score = np.mean(np.abs((y_test - y_pred_test) / np.where(y_test == 0, 1, y_test))) * 100
 
         return mape_score
 
     @staticmethod
-    def manual_encode_dataframe(df):
-        df['airline'] = df['airline'].replace({
-            'Vistara': 1,
-            'Air_India': 2,
-            'Indigo': 3,
-            'GO_FIRST': 4,
-            'AirAsia': 5,
-            'SpiceJet': 6
-        })
-        df['source_city'] = df['source_city'].replace({
-            'Delhi': 1,
-            'Mumbai': 2,
-            'Bangalore': 3,
-            'Kolkata': 4,
-            'Hyderabad': 5,
-            'Chennai': 6
-        })
-        df['departure_time'] = df['departure_time'].replace({
-            'Morning': 1,
-            'Early_Morning': 2,
-            'Evening': 3,
-            'Night': 4,
-            'Afternoon': 5,
-            'Late_Night': 6
-        })
-        df['arrival_time'] = df['arrival_time'].replace({
-            'Night': 1,
-            'Evening': 2,
-            'Morning': 3,
-            'Afternoon': 4,
-            'Early_Morning': 5,
-            'Late_Night': 6
-        })
-        df['destination_city'] = df['destination_city'].replace({
-            'Mumbai': 1,
-            'Delhi': 2,
-            'Bangalore': 3,
-            'Kolkata': 4,
-            'Hyderabad': 5,
-            'Chennai': 6
-        })
-        df['stops'] = df['stops'].replace({
-            'zero': 1,
-            'one': 2,
-            'two_or_more': 3
-        })
-        df['class'] = df['class'].replace({
-            'Economy': 1,
-            'Business': 2
-        })
-        return df
-
-    @staticmethod
     def create_new_folder(folder):
-        """Create a new folder if it doesn't exist.
-
-        Keyword arguments:
-        folder -- Path to the folder
-
-        Returns:
-        None
-        """
         Path(folder).mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def save_model(model, file_path):
-        print("writing model to pkl")
         with open(file_path, 'wb') as file:
             pickle.dump(model, file)
 

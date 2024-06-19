@@ -63,8 +63,6 @@ class Predict(Resource):
             print('checkpoint 3')
             df = obj_mlmodel.preprocessing_pipeline_inference(infer_array)
             y_pred = obj_mlmodel.predict(df)
-            # print('checkpoint 5')
-            # print(y_pred)
             return {'message': 'Inference Successful', 'prediction': str(y_pred)}, 200
         except Exception as e:
             return {'message': 'Internal Server Error', 'error': str(e)}, 500
