@@ -32,7 +32,7 @@ class Train(Resource):
         if os.path.splitext(uploaded_file.filename)[1] != '.csv':
             return {'error': 'Invalid file type'}, 400
 
-        data_path = './Data/Clean_Dataset.csv'
+        data_path = './Original Data/Clean_Dataset.csv'
         uploaded_file.save(data_path)
 
         try:
